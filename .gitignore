@@ -1,0 +1,4 @@
+.env
+app.log
+geminitest.py
+azurettstest.py
