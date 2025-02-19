@@ -129,22 +129,47 @@ def handle_disconnect():
     logger.info('Client disconnected')
     print("DEBUG: Client disconnected")
 
-@socketio.on('stop_process')  # Add stop_process handler
+@socketio.on('stop_process')
 def handle_stop_process():
-    global kill_flag
-    global current_horoscope_text
-    logger.info("Kill switch activated")
-    kill_flag.set()  # Activate the kill flag
-
-    stop_speech()
-
-    # Reset current_horoscope_text to empty string
-    current_horoscope_text = ""
-
-    # Emit a message to the client to update the UI
+    """Handle stop request based on current process stage"""
+    global kill_flag, current_horoscope_text, process_state
+    
+    logger.info(f"Kill switch activated at stage: {process_state['stage']}")
+    current_stage = process_state["stage"]
+    
+    # Set kill flag regardless of stage
+    kill_flag.set()
+    process_state["interrupted"] = True
+    
+    # Handle each stage appropriately
+    if current_stage == "generating":
+        logger.info("Stopping horoscope generation")
+        current_horoscope_text = ""
+        
+    elif current_stage in ["sending", "synthesizing"]:
+        logger.info("Stopping speech synthesis preparation")
+        current_horoscope_text = ""
+        stop_speech()
+        
+    elif current_stage == "playing":
+        logger.info("Stopping speech playback")
+        stop_speech()
+    
+    # Clean up resources
+    cleanup_resources()
+    
+    # Emit appropriate message based on stage
+    message = {
+        "generating": "Horoscope generation stopped",
+        "sending": "Text processing stopped",
+        "synthesizing": "Speech synthesis stopped",
+        "playing": "Playback stopped"
+    }.get(current_stage, "Process ended")
+    
     socketio.emit('process_killed', {
-        'message': 'Process ended abruptly',
-        'show_start_again': True
+        'message': message,
+        'show_start_again': True,
+        'stage': current_stage
     })
 
 # --- Gemini Setup ---
@@ -162,10 +187,18 @@ generation_config = {
     "response_mime_type": "text/plain",
 }
 
-speech_status = {"completed": False, "startTime": None, "endTime": None, "interrupted": False} # Add "interrupted" status
+# Enhanced state management
+process_state = {
+    "stage": None,  # "generating", "sending", "synthesizing", "playing"
+    "start_time": None,
+    "interrupted": False,
+    "error": None
+}
+
+speech_status = {"completed": False, "startTime": None, "endTime": None, "interrupted": False}
 
 model = genai.GenerativeModel(
-    model_name="gemini-exp-1206",
+    model_name="gemini-2.0-flash-thinking-exp-01-21",
     generation_config=generation_config,
     system_instruction="I feed the generated text to a TTS model. So don't include extra precurosor text. Direct horoscopy. Be practical and cautious in the tell. No subheading or subtitles. Just paragraphs. \n\nUsers are rural Telugu people doing various occupations. Write like a screenplay writer. Discuss past, present and future of the person. End with something like \"మల్దకల్ తిమ్మప్ప స్వామి ఆశీస్సులు మీపై ఎల్లప్పుడూ ఉంటాయి\"\n\nతెలుగులో పూర్తి స్థాయి పంచాంగం. ఈ రోజు తిథి, నక్షత్రం, వర్జ్యం, దుర్ముహూర్తం, రాహు కాలం మొదలైనవి తెలుసుకోవటానికి ఈ పంచాంగం ఉపయోగ పడుతుంది. అంతేకాకుండా ఏ రోజుకైనా, ఏ ప్రదేశానికైనా ఒక్క క్లిక్ తో క్షణంలో పంచాంగాన్ని పొందండి. తిథి, వార, నక్షత్ర, యోగ, కరణాల సమయాలతో పాటు, వర్జ్యం, దుర్ముహూర్తం లాంటి చెడు సమయాలు, అమృత ఘడియల లాంటి మంచి సమయాల వివరాలు, తారాబలం, చంద్ర బలం, ప్రతి రోజు లగ్నాంత్య సమయాలు, ప్రతి లగ్నానికి పుష్కరాంశలు, శుభాంశలు, సూర్యోదయ కాల గ్రహ స్థితి, మొదలైన ఎన్నో విషయాలతో, జ్యోతిష్కుల నుంచి, సామాన్య ప్రజల దాకా ప్రతి ఒక్కరికి, ప్రతీ రోజు ఉపయోగపడేలా రూపొందించిన ఏకైక ఆన్లైన్ పంచాంగ సాఫ్ట్వేర్ ఇది. మీకు కావలసిన తేది, మరియు ప్రదేశ వివరాలతో పాటు సూర్యోదయ కాల కుండలి ఏ పద్ధతిలో కావాలో సెలెక్ట్ చేసుకుని సబ్మిట్ చేయండి. రోజువారీ పూజాదికాల సంకల్పం నుంచి ముహూర్త నిర్ణయం వరకు ప్రతి ఒక్క అంశంలో మీకు ఉపయోగపడేలా ఈ పంచాంగం సాఫ్ట వేర్ రూపొందించటం జరిగింది.",
 )
@@ -194,7 +227,7 @@ def construct_prompt(name, place_of_birth, dob, problem, occupation):
         prompt_parts.append(f"Occupation: {occupation}")
 
     prompt_parts.append(
-        "\n\nBased on the above information of a person write positive uplifting horoscopy for the user. Write only in Telugu. Include deity references. Advise you give should be practical and progressive. Give negatives and positives concerning the life situation. Mention his horoscope. Go out of the box and give solutions. Write very very short in 50 words only. Compress."
+        "\n\nBased on the above information of a person write positive uplifting horoscopy for the user. Write only in Telugu. Include deity references. Advise you give should be practical for the age of the user and be progressive. Give negatives and positives concerning the life situation. Mention his horoscope. Go out of the box and give solutions. Inspire the user. Write in 200 words."
     )
     return "\n".join(prompt_parts)
 
@@ -219,44 +252,55 @@ def get_horoscope(initial_prompt):
 def speak_text(text, completion_callback):
     global speech_synthesizer
     global kill_flag
+    global process_state
+    
     with synthesis_lock:
-      if speech_synthesizer is None:
-          speech_synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)
+        if speech_synthesizer is None:
+            speech_synthesizer = speechsdk.SpeechSynthesizer(speech_config=speech_config, audio_config=audio_config)
 
     def synthesis_started(evt):
-        global speech_status
+        global speech_status, process_state
         start_time = datetime.now()
         speech_status["startTime"] = start_time
         speech_status["completed"] = False
-        speech_status["interrupted"] = False # Reset interrupted flag
+        speech_status["interrupted"] = False
+        process_state["start_time"] = start_time
+        transition_stage("synthesizing")
         logger.info(f"Speech synthesis started at {start_time}")
 
     def synthesis_completed(evt):
-        global speech_status
-        global speech_synthesizer
+        global speech_status, speech_synthesizer, process_state
         end_time = datetime.now()
         speech_status["endTime"] = end_time
-        speech_status["completed"] = True  # Mark as completed
-        logger.info(f"Speech synthesis completed at {end_time}")
-        completion_callback(True, speech_status["startTime"], end_time, None)
+        speech_status["completed"] = True
+        
+        if not process_state["interrupted"]:
+            transition_stage("playing")
+            logger.info(f"Speech synthesis completed at {end_time}")
+            completion_callback(True, speech_status["startTime"], end_time, None)
+        
         with synthesis_lock:
             speech_synthesizer = None
 
     def synthesis_canceled(evt):
-        global speech_status
-        global speech_synthesizer
+        global speech_status, speech_synthesizer, process_state
         end_time = datetime.now()
         speech_status["endTime"] = end_time
         speech_status["completed"] = True
+        process_state["interrupted"] = True
+        
         logger.info(f"Speech synthesis canceled at {end_time}")
         completion_callback(
             False,
             speech_status["startTime"],
             end_time,
-            "Speech synthesis canceled",
+            "Speech synthesis canceled"
         )
+        
         with synthesis_lock:
             speech_synthesizer = None
+        
+        cleanup_resources()
 
     speech_synthesizer.synthesis_started.connect(synthesis_started)
     speech_synthesizer.synthesis_completed.connect(synthesis_completed)
@@ -264,27 +308,71 @@ def speak_text(text, completion_callback):
 
     if kill_flag.is_set():
         logger.info("Kill flag is set before starting TTS")
+        process_state["interrupted"] = True
         completion_callback(False, None, None, "TTS skipped due to user interruption")
-        kill_flag.clear()  # Reset the flag
+        kill_flag.clear()
+        cleanup_resources()
         return
 
     try:
+        transition_stage("sending")
         result = speech_synthesizer.speak_text_async(text).get()
+        
         if result.reason == speechsdk.ResultReason.SynthesizingAudioCompleted:
-            logger.info("Speech synthesis done")
+            if not process_state["interrupted"]:
+                logger.info("Speech synthesis done")
         elif result.reason == speechsdk.ResultReason.Canceled:
             cancellation_details = result.cancellation_details
-            logger.error(f"Speech synthesis canceled: {cancellation_details.reason}")
+            error_msg = f"Speech synthesis canceled: {cancellation_details.reason}"
+            logger.error(error_msg)
             logger.error(f"Error details: {cancellation_details.error_details}")
+            
+            process_state["error"] = error_msg
             completion_callback(
                 False,
                 speech_status["startTime"],
                 datetime.now(),
-                "Speech synthesis canceled",
+                error_msg
             )
+            cleanup_resources()
+            
     except Exception as e:
-        logger.error(f"Exception during speech synthesis: {e}")
+        error_msg = f"Exception during speech synthesis: {e}"
+        logger.error(error_msg)
+        process_state["error"] = error_msg
         completion_callback(False, speech_status["startTime"], datetime.now(), str(e))
+        cleanup_resources()
+
+def transition_stage(new_stage):
+    """Update process stage and emit status to clients"""
+    global process_state
+    process_state["stage"] = new_stage
+    socketio.emit('stage_update', {
+        'stage': new_stage,
+        'timestamp': datetime.now().isoformat()
+    })
+    logger.info(f"Process stage transitioned to: {new_stage}")
+
+def cleanup_resources():
+    """Clean up all resources and reset state"""
+    global speech_synthesizer, process_state
+    
+    with synthesis_lock:
+        if speech_synthesizer:
+            try:
+                speech_synthesizer.stop_speaking_async().get()
+            except Exception as e:
+                logger.error(f"Error stopping speech synthesis: {e}")
+            finally:
+                speech_synthesizer = None
+    
+    process_state.update({
+        "stage": None,
+        "start_time": None,
+        "interrupted": False,
+        "error": None
+    })
+    logger.info("Resources cleaned up and state reset")
 
 def on_completion(success, start_time, end_time, error_message):
     response = {
@@ -323,27 +411,60 @@ def index():
             print(f"DEBUG: Validation errors - {errors}")
             return jsonify({'errors': errors}), 400
 
+        # Reset states before starting new process
+        global kill_flag, current_horoscope_text, process_state
+        kill_flag.clear()
+        cleanup_resources()
+        
+        # Start generation process
+        transition_stage("generating")
+        process_state["start_time"] = datetime.now()
+
         initial_prompt = construct_prompt(name, place_of_birth, dob, problem, occupation)
         print(f"DEBUG: Constructed prompt - {initial_prompt}")
 
-        global current_horoscope_text
+        # Check if process was interrupted during prompt construction
+        if kill_flag.is_set():
+            cleanup_resources()
+            return jsonify({
+                "message": "Process stopped during initialization.",
+                "show_start_again": True
+            })
+
         current_horoscope_text = get_horoscope(initial_prompt)
         print(f"DEBUG: Horoscope text generated - {current_horoscope_text}")
 
+        # Check if process was interrupted during generation
+        if kill_flag.is_set():
+            cleanup_resources()
+            return jsonify({
+                "message": "Process stopped during generation.",
+                "show_start_again": True
+            })
+
         if current_horoscope_text is None:
-            return jsonify({'error': 'Failed to generate horoscope text.'}), 500
+            process_state["error"] = "Failed to generate horoscope text."
+            cleanup_resources()
+            return jsonify({'error': process_state["error"]}), 500
+            
         logger.info("Horoscope Text: %s", current_horoscope_text)
 
-        global kill_flag
-        kill_flag.clear() # Ensure the kill flag is clear before starting
+        # Start speech synthesis in a new thread
+        def speech_callback(success, start, end, error):
+            result = on_completion(success, start, end, error)
+            if not success and error:
+                process_state["error"] = error
+            return result
 
-        # Call speak_text in a new thread with the callback
-        threading.Thread(target=speak_text,
-                         args=(current_horoscope_text, lambda success, start, end, error: on_completion(success, start, end,
-                                                                                                error))).start()
+        threading.Thread(
+            target=speak_text,
+            args=(current_horoscope_text, speech_callback)
+        ).start()
+
         return jsonify({
             "message": "Generating horoscope...",
-            "fullText": current_horoscope_text
+            "fullText": current_horoscope_text,
+            "stage": process_state["stage"]
         })
     print("DEBUG: Rendering index.html")
     return render_template("index.html")
@@ -358,11 +479,14 @@ def stop_speech():
     print("DEBUG: Entering stop_speech route")
     global speech_synthesizer
     global speech_status
+    print("DEBUG: stop_speech function called") # DEBUGGING LOG
     with synthesis_lock:
       if speech_synthesizer:
+          print("DEBUG: speech_synthesizer is active, attempting to stop") # DEBUGGING LOG
           try:
               speech_synthesizer.stop_speaking_async().get()
               speech_status["interrupted"] = True  # Set the interrupted flag
+              print("DEBUG: speech_synthesizer stop_speaking_async called") # DEBUGGING LOG
               return jsonify({"success": True})
           except Exception as e:
               logger.error(f"Error stopping speech synthesis: {e}")

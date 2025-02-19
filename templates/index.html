@@ -629,6 +629,14 @@
         savedFormData = null;
         console.log("DEBUG: savedFormData reset");
         console.log("DEBUG: resetUI completed");
+
+        // Reset audio stream related variables and UI elements
+        streamStartTime = null;
+        clearInterval(durationInterval);
+        durationInterval = null;
+        document.getElementById("device-selector").style.display = "none";
+        document.getElementById("stream-status").style.display = "none";
+        document.getElementById("start-stream-btn").style.display = "block";
       }
 
       // Function to reset the form
@@ -701,12 +709,15 @@
               textContainer.appendChild(remainingCountElement);
             }
 
-            // Update message to "Horoscope Playing..."
-            document.getElementById("message-container").textContent =
-              "Horoscope playing...";
+            // Update UI based on stage
+            if (data.stage) {
+              updateUIForStage(data.stage);
+              updateKillSwitchButton(data.stage);
+            }
 
             // Make sure the status container is visible
             document.getElementById("status-container").style.display = "block";
+            document.getElementById("kill-switch-btn").style.display = "block";
 
             // --- END OF UI UPDATES ---
 
@@ -1080,34 +1091,108 @@
       // Audio stream handling
       socket.on("audio_stream", function (data) {
         console.log("DEBUG: audio_stream event received");
-        if (!audioContext) return;
 
-        // Convert int16 audio data to float32
-        const audioBuffer = new Int16Array(data.audio);
-        const float32Data = new Float32Array(audioBuffer.length);
-        for (let i = 0; i < audioBuffer.length; i++) {
-          float32Data[i] = audioBuffer[i] / 32767;
-        }
+        // Check if the process was interrupted
+        fetch("/speech_status")
+          .then((response) => response.json())
+          .then((statusData) => {
+            console.log("DEBUG: speech status in audio_stream", statusData);
+            if (statusData.interrupted) {
+              console.log("DEBUG: Playback interrupted, stopping audio.");
+              return; // Don't play audio if interrupted
+            }
 
-        // Calculate audio level from float32 data
-        const sum = float32Data.reduce((acc, val) => acc + val * val, 0);
-        const rms = Math.sqrt(sum / float32Data.length);
-        const level = Math.min(100, Math.max(0, rms * 300)); // Adjust multiplier as needed
-        document.getElementById("level-meter-fill").style.width = `${level}%`;
+            if (!audioContext) return;
 
-        // Create audio buffer with received parameters
-        const buffer = audioContext.createBuffer(
-          data.channels || 1,
-          float32Data.length,
-          data.rate || 48000
-        );
-        buffer.copyToChannel(float32Data, 0);
+            // Convert int16 audio data to float32
+            const audioBuffer = new Int16Array(data.audio);
+            const float32Data = new Float32Array(audioBuffer.length);
+            for (let i = 0; i < audioBuffer.length; i++) {
+              float32Data[i] = audioBuffer[i] / 32767;
+            }
 
-        const source = audioContext.createBufferSource();
-        source.buffer = buffer;
-        source.connect(audioContext.destination);
-        source.start();
+            // Calculate audio level from float32 data
+            const sum = float32Data.reduce((acc, val) => acc + val * val, 0);
+            const rms = Math.sqrt(sum / float32Data.length);
+            const level = Math.min(100, Math.max(0, rms * 300)); // Adjust multiplier as needed
+            document.getElementById(
+              "level-meter-fill"
+            ).style.width = `${level}%`;
+
+            // Create audio buffer with received parameters
+            const buffer = audioContext.createBuffer(
+              data.channels || 1,
+              float32Data.length,
+              data.rate || 48000
+            );
+            buffer.copyToChannel(float32Data, 0);
+
+            const source = audioContext.createBufferSource();
+            source.buffer = buffer;
+            source.connect(audioContext.destination);
+            source.start();
+          });
       });
+
+      // Handle stage updates
+      socket.on("stage_update", function (data) {
+        console.log("DEBUG: stage_update event received", data);
+        updateUIForStage(data.stage);
+        updateKillSwitchButton(data.stage);
+      });
+
+      function updateUIForStage(stage) {
+        const messageContainer = document.getElementById("message-container");
+        const killSwitchBtn = document.getElementById("kill-switch-btn");
+        const playingMessage = document.getElementById("playing-message");
+
+        switch (stage) {
+          case "generating":
+            messageContainer.textContent = "Generating horoscope...";
+            killSwitchBtn.style.display = "block";
+            playingMessage.style.display = "none";
+            break;
+          case "sending":
+            messageContainer.textContent = "Processing text...";
+            killSwitchBtn.style.display = "block";
+            playingMessage.style.display = "none";
+            break;
+          case "synthesizing":
+            messageContainer.textContent = "Creating speech...";
+            killSwitchBtn.style.display = "block";
+            playingMessage.style.display = "none";
+            break;
+          case "playing":
+            messageContainer.textContent = "Playing horoscope...";
+            playingMessage.style.display = "block";
+            killSwitchBtn.style.display = "block";
+            break;
+          default:
+            messageContainer.textContent = "";
+            killSwitchBtn.style.display = "none";
+            playingMessage.style.display = "none";
+        }
+      }
+
+      function updateKillSwitchButton(stage) {
+        const killSwitchBtn = document.getElementById("kill-switch-btn");
+        switch (stage) {
+          case "generating":
+            killSwitchBtn.textContent = "Stop Generation";
+            break;
+          case "sending":
+            killSwitchBtn.textContent = "Stop Processing";
+            break;
+          case "synthesizing":
+            killSwitchBtn.textContent = "Stop Synthesis";
+            break;
+          case "playing":
+            killSwitchBtn.textContent = "Stop Playback";
+            break;
+          default:
+            killSwitchBtn.textContent = "Stop Horoscope";
+        }
+      }
 
       // Kill switch functionality
       document
@@ -1143,7 +1228,7 @@
         console.log("DEBUG: process_killed event received", data);
         document.getElementById("message-container").textContent = data.message;
         // Always show the Start Again button when process is killed
-        document.getElementById("new-start-btn").style.display = "block";
+        // document.getElementById("new-start-btn").style.display = "block";
         document.getElementById("total-time").style.display = "none";
         // Ensure kill switch button is hidden
         document.getElementById("kill-switch-btn").style.display = "none";
