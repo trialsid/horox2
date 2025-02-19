@@ -1,3 +1,5 @@
+import pygame
+import time
 import os
 from flask import Flask, request, render_template, jsonify, url_for
 import google.generativeai as genai
@@ -579,5 +581,6 @@ def get_devices():
         return jsonify({'error': str(e)}), 500
 
 if __name__ == "__main__":
+    # --- Flask App ---
     # Run the Flask app
     socketio.run(app, host='0.0.0.0', port=5000, debug=True, allow_unsafe_werkzeug=True)

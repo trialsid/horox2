@@ -2,3 +2,8 @@
 app.log
 geminitest.py
 azurettstest.py
+__pycache__/
+.venv/
+stop playing.txt
+stop_button_implementation_plan.md
+vid1.mp4
