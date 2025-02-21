@@ -25,7 +25,7 @@ socketio = SocketIO(app)
 if platform.system() == 'Windows':
     LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.log')
 else:  # Assuming Linux (Raspberry Pi)
-    LOG_FILE = '/home/thikka/projects/horox/app.log'
+    LOG_FILE = '/home/thikka/projects/horox2/app.log'
 
 logging.basicConfig(filename=LOG_FILE, level=logging.DEBUG,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -230,7 +230,7 @@ def construct_prompt(name, place_of_birth, dob, problem, occupation):
         prompt_parts.append(f"Occupation: {occupation}")
 
     prompt_parts.append(
-        "\n\nBased on the above information of a person write positive uplifting horoscopy for the user. Write only in Telugu. Include deity references. Advise you give should be practical for the age of the user and be progressive. Give negatives and positives concerning the life situation. Mention his horoscope. Go out of the box and give solutions. Inspire the user. Write in 100 words."
+        "\n\nBased on the above information of a person write positive uplifting horoscopy for the user. Write only in Telugu. Include deity references. Advise you give should be practical for the age of the user and be progressive. Give negatives and positive scenarios concerning the future life situations. Mention his horoscope. Go out of the box and give solutions. Inspire the user. Write 300 words long."
     )
     return "\n".join(prompt_parts)
 
