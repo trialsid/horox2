@@ -14,6 +14,7 @@ import numpy as np
 import logging
 import requests
 import platform
+import sqlite3
 
 
 load_dotenv()
@@ -24,8 +25,10 @@ socketio = SocketIO(app)
 # --- Logging Configuration ---
 if platform.system() == 'Windows':
     LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'app.log')
+    DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sessions.db')
 else:  # Assuming Linux (Raspberry Pi)
     LOG_FILE = '/home/thikka/projects/horox2/app.log'
+    DB_FILE = '/home/thikka/projects/horox2/sessions.db'
 
 logging.basicConfig(filename=LOG_FILE, level=logging.DEBUG,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -39,6 +42,71 @@ speech_synthesizer = None
 synthesis_lock = threading.Lock()
 kill_flag = threading.Event()  # Add kill flag
 current_horoscope_text = ""  # Initialize current_horoscope_text
+
+# --- SQLite Setup ---
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    datetime TEXT,
+                    name TEXT,
+                    place_of_birth TEXT,
+                    dob TEXT,
+                    problem TEXT,
+                    occupation TEXT,
+                    horoscope_text TEXT
+                 )''')
+    conn.commit()
+    conn.close()
+
+def save_session(form_data, horoscope_text):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute('''INSERT INTO sessions (datetime, name, place_of_birth, dob, problem, occupation, horoscope_text)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)''',
+              (datetime.now().isoformat(),
+               form_data.get("name"),
+               form_data.get("place_of_birth"),
+               form_data.get("dob"),
+               form_data.get("problem", ""),
+               form_data.get("occupation", ""),
+               horoscope_text))
+    conn.commit()
+    session_id = c.lastrowid
+    conn.close()
+    logger.info(f"Session saved for {form_data.get('name')} with ID {session_id}")
+    return session_id
+
+def get_sessions():
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT id, datetime, name FROM sessions ORDER BY datetime DESC")
+    sessions = [{"id": row[0], "datetime": row[1], "name": row[2]} for row in c.fetchall()]
+    conn.close()
+    return sessions
+
+def get_session_details(session_id):
+    conn = sqlite3.connect(DB_FILE)
+    c = conn.cursor()
+    c.execute("SELECT * FROM sessions WHERE id = ?", (session_id,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return {
+            "id": row[0],
+            "datetime": row[1],
+            "name": row[2],
+            "place_of_birth": row[3],
+            "dob": row[4],
+            "problem": row[5],
+            "occupation": row[6],
+            "horoscope_text": row[7]
+        }
+    return None
+
+# Initialize the database on startup
+init_db()
 
 class AudioManager:
     def __init__(self):
@@ -230,7 +298,7 @@ def construct_prompt(name, place_of_birth, dob, problem, occupation):
         prompt_parts.append(f"Occupation: {occupation}")
 
     prompt_parts.append(
-        "\n\nBased on the above information of a person write positive uplifting horoscopy for the user. Write only in Telugu. Include deity references. Advise you give should be practical for the age of the user and be progressive. Give negatives and positive scenarios concerning the future life situations. Mention his horoscope. Go out of the box and give solutions. Inspire the user. Write 300 words long."
+        "\n\nBased on the above information of a person write positive uplifting horoscopy for the user. Write only in Telugu. Include deity references. Advise you give should be practical considering the age of the user and be progressive. Give negatives and positive scenarios concerning the future life situations. Mention his horoscope. Go out of the box and give solutions. Inspire the user. Make sure to use user's name at random places. Make sure to throw some random pursuit that the user should take. Write 250 words long."
     )
     return "\n".join(prompt_parts)
 
@@ -387,9 +455,19 @@ def on_completion(success, start_time, end_time, error_message):
     # Return the response directly rather than wrapping in jsonify
     return response
 
+@app.route("/sessions", methods=["GET"])
+def get_session_history():
+    return jsonify(get_sessions())
+
+@app.route("/session/<int:session_id>", methods=["GET"])
+def get_session_details_endpoint(session_id):
+    session = get_session_details(session_id)
+    if session:
+        return jsonify(session)
+    return jsonify({"error": "Session not found"}), 404
+
 @app.route("/", methods=["GET", "POST"])
 def index():
-    print("DEBUG: Entering index route")
     if request.method == "POST":
         name = request.form.get("name")
         place_of_birth = request.form.get("place_of_birth")
@@ -397,9 +475,6 @@ def index():
         problem = request.form.get("problem")
         occupation = request.form.get("occupation")
 
-        print(f"DEBUG: Received form data - Name: {name}, POB: {place_of_birth}, DOB: {dob}, Problem: {problem}, Occupation: {occupation}")
-
-        # Basic server-side validation
         errors = {}
         if not name:
             errors['name'] = 'Name is required.'
@@ -411,48 +486,33 @@ def index():
             errors['dob'] = 'Invalid date format. Use mm-yyyy.'
 
         if errors:
-            print(f"DEBUG: Validation errors - {errors}")
             return jsonify({'errors': errors}), 400
 
-        # Reset states before starting new process
         global kill_flag, current_horoscope_text, process_state
         kill_flag.clear()
         cleanup_resources()
         
-        # Start generation process
         transition_stage("generating")
         process_state["start_time"] = datetime.now()
 
         initial_prompt = construct_prompt(name, place_of_birth, dob, problem, occupation)
-        print(f"DEBUG: Constructed prompt - {initial_prompt}")
-
-        # Check if process was interrupted during prompt construction
         if kill_flag.is_set():
             cleanup_resources()
-            return jsonify({
-                "message": "Process stopped during initialization.",
-                "show_start_again": True
-            })
+            return jsonify({"message": "Process stopped during initialization.", "show_start_again": True})
 
         current_horoscope_text = get_horoscope(initial_prompt)
-        print(f"DEBUG: Horoscope text generated - {current_horoscope_text}")
-
-        # Check if process was interrupted during generation
         if kill_flag.is_set():
             cleanup_resources()
-            return jsonify({
-                "message": "Process stopped during generation.",
-                "show_start_again": True
-            })
+            return jsonify({"message": "Process stopped during generation.", "show_start_again": True})
 
         if current_horoscope_text is None:
             process_state["error"] = "Failed to generate horoscope text."
             cleanup_resources()
             return jsonify({'error': process_state["error"]}), 500
-            
-        logger.info("Horoscope Text: %s", current_horoscope_text)
 
-        # Start speech synthesis in a new thread
+        # Save session data to SQLite
+        save_session(request.form, current_horoscope_text)
+
         def speech_callback(success, start, end, error):
             result = on_completion(success, start, end, error)
             if not success and error:
@@ -469,7 +529,6 @@ def index():
             "fullText": current_horoscope_text,
             "stage": process_state["stage"]
         })
-    print("DEBUG: Rendering index.html")
     return render_template("index.html")
 
 @app.route("/speech_status")

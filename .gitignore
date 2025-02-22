@@ -10,3 +10,4 @@ vid1.mp4
 *.jpg
 experiments/
 main-small.py
+sessions.db
